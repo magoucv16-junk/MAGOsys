@@ -1,4 +1,5 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
+import { supabase } from "./supabaseClient";
 
 export default function App() {
   // --- BASE DE DATOS DE USUARIOS ---
@@ -25,19 +26,12 @@ export default function App() {
     bcvRate: 36.50
   });
 
-  // Inventario General
-  const [inventory, setInventory] = useState([
-    { id: 1, code: "PROD-001", name: "Servicio de Consultoría / Asesoría", category: "Servicios", description: "Asesoría profesional personalizada", unit: "hora", costUSD: 10.00, priceUSD: 25.00, stock: 100 },
-    { id: 2, code: "PROD-002", name: "Café Americano 12oz", category: "Alimentos y Bebidas", description: "Café caliente recién pasado", unit: "und", costUSD: 0.80, priceUSD: 1.50, stock: 50 },
-    { id: 3, code: "PROD-003", name: "Queso Paisa Artesanal", category: "Víveres", description: "Queso semicurado", unit: "kg", costUSD: 4.00, priceUSD: 5.80, stock: 25 }
-  ]);
+  // Inventario General (Cargado desde la nube)
+  const [inventory, setInventory] = useState([]);
 
-  // Clientes CRM y Buscador en POS
-  const [clients, setClients] = useState([
-    { id: 1, name: "Cliente Genérico", rif: "V-00000000-0", phone: "0412-0000000", address: "Caracas, Distrito Capital", notes: "Sin notas" },
-    { id: 2, name: "Inversiones Comerciales C.A.", rif: "J-40123456-8", phone: "0414-1234567", address: "Av. Francisco de Miranda, Chacao", notes: "Cliente corporativo" }
-  ]);
-  const [selectedClient, setSelectedClient] = useState(clients[0]);
+  // Clientes CRM y Buscador en POS (Cargados desde la nube)
+  const [clients, setClients] = useState([]);
+  const [selectedClient, setSelectedClient] = useState(null);
   const [clientSearchText, setClientSearchText] = useState("");
   const [showClientDropdown, setShowClientDropdown] = useState(false);
 
@@ -70,6 +64,80 @@ export default function App() {
   const [editingProduct, setEditingProduct] = useState(null);
   const [productForm, setProductForm] = useState({ code: "", name: "", category: "General", description: "", unit: "und", costUSD: "", priceUSD: "", stock: "" });
   const [clientForm, setClientForm] = useState({ name: "", rif: "", phone: "", address: "", notes: "" });
+
+  // --- CARGA INICIAL DESDE SUPABASE ---
+  useEffect(() => {
+    cargarDatosDesdeNube();
+  }, []);
+
+  const cargarDatosDesdeNube = async () => {
+    try {
+      // 1. Cargar Configuración
+      const { data: configData } = await supabase.from('config').select('*').single();
+      if (configData) {
+        setConfig({
+          storeName: configData.store_name,
+          rif: configData.rif,
+          address: configData.address,
+          phone: configData.phone,
+          footerMessage: configData.footer_message,
+          bcvRate: parseFloat(configData.bcv_rate) || 36.50
+        });
+      }
+
+      // 2. Cargar Productos
+      const { data: prodData } = await supabase.from('productos').select('*');
+      if (prodData && prodData.length > 0) {
+        setInventory(prodData.map(p => ({
+          id: p.id,
+          code: p.code,
+          name: p.name,
+          category: p.category,
+          description: p.description,
+          unit: p.unit,
+          costUSD: parseFloat(p.cost_usd) || 0,
+          priceUSD: parseFloat(p.price_usd) || 0,
+          stock: parseFloat(p.stock) || 0
+        })));
+      }
+
+      // 3. Cargar Clientes
+      const { data: clientData } = await supabase.from('clientes').select('*');
+      if (clientData && clientData.length > 0) {
+        const formattedClients = clientData.map(c => ({
+          id: c.id,
+          name: c.name,
+          rif: c.rif,
+          phone: c.phone,
+          address: c.address,
+          notes: c.notes
+        }));
+        setClients(formattedClients);
+        setSelectedClient(formattedClients[0]);
+      }
+
+      // 4. Cargar Historial de Ventas
+      const { data: salesData } = await supabase.from('ventas').select('*').order('id', { ascending: false });
+      if (salesData) {
+        setSalesHistory(salesData.map(s => ({
+          id: s.id,
+          invoiceNumber: s.invoice_number,
+          date: new Date(s.created_at).toLocaleString(),
+          timestamp: new Date(s.created_at).getTime(),
+          client: s.client_data,
+          cashier: s.cashier,
+          items: s.items,
+          totalUSD: parseFloat(s.total_usd) || 0,
+          totalVES: parseFloat(s.total_ves) || 0,
+          paymentRows: s.payment_rows,
+          changeInfo: s.change_info,
+          status: s.status
+        })));
+      }
+    } catch (error) {
+      console.error("Error al sincronizar con Supabase:", error);
+    }
+  };
 
   // --- LOGIN ---
   const handleLogin = (e) => {
@@ -133,6 +201,7 @@ export default function App() {
 
   // --- ABRIR CHECKOUT Y CARGAR DATOS DE FACTURA ---
   const handleOpenCheckout = () => {
+    if (!selectedClient) return alert("Seleccione un cliente primero.");
     setPaymentRows([{ method: "Efectivo USD", currency: "USD", rawAmount: totalUSD.toFixed(2) }]);
     setCustomInvoiceData({
       name: selectedClient.name,
@@ -223,7 +292,8 @@ export default function App() {
   const totalPaidUSD = paymentRows.reduce((acc, row) => acc + getRowAmountInUSD(row), 0);
   const remainingUSD = totalUSD - totalPaidUSD;
 
-  const processPayment = () => {
+  // --- PROCESAR PAGO Y GUARDAR EN SUPABASE ---
+  const processPayment = async () => {
     if (Math.abs(remainingUSD) > 0.05 && totalPaidUSD < totalUSD) {
       return alert("❌ El monto pagado es menor al total de la factura. Complete el pago mixto.");
     }
@@ -256,14 +326,38 @@ export default function App() {
       notes: customInvoiceData.notes || ""
     };
 
-    const newSale = {
-      id: Date.now(),
-      invoiceNumber: `FAC-${Math.floor(100000 + Math.random() * 900000)}`,
+    const invoiceNum = `FAC-${Math.floor(100000 + Math.random() * 900000)}`;
+
+    const newSalePayload = {
+      invoice_number: invoiceNum,
+      client_data: finalClientData,
+      cashier: currentUser.name,
+      items: cart,
+      total_usd: totalUSD,
+      total_ves: totalVES,
+      payment_rows: formattedPaymentRows,
+      change_info: changeInfo,
+      bcv_rate_used: config.bcvRate,
+      status: "COMPLETADA"
+    };
+
+    // ☁️ Guardar en Supabase
+    const { data, error } = await supabase.from('ventas').insert([newSalePayload]).select();
+
+    if (error) {
+      console.error("Error al guardar venta en Supabase:", error);
+      alert("❌ Hubo un error al registrar la venta en la nube.");
+      return;
+    }
+
+    const savedSale = {
+      id: data && data[0] ? data[0].id : Date.now(),
+      invoiceNumber: invoiceNum,
       date: new Date().toLocaleString(),
       timestamp: Date.now(),
       client: finalClientData,
       cashier: currentUser.name,
-      items: cart.length > 0 ? [...cart] : [],
+      items: [...cart],
       totalUSD,
       totalVES,
       paymentRows: formattedPaymentRows,
@@ -271,11 +365,12 @@ export default function App() {
       status: "COMPLETADA"
     };
 
-    setSalesHistory([newSale, ...salesHistory]);
-    setPrintedInvoice(newSale);
+    setSalesHistory([savedSale, ...salesHistory]);
+    setPrintedInvoice(savedSale);
     setCart([]);
     setIsCheckoutOpen(false);
     setCashTenderedUSD("");
+    alert("¡Venta procesada y sincronizada en la nube con éxito!");
   };
 
   // --- REPORTES X Y Z ---
@@ -319,28 +414,72 @@ export default function App() {
   };
 
   // --- GESTIÓN PRODUCTOS Y CLIENTES ---
-  const handleSaveProduct = (e) => {
+  const handleSaveProduct = async (e) => {
     e.preventDefault();
     if (currentUser.role !== "admin") return alert("❌ Solo Administradores.");
     if (!productForm.name || !productForm.priceUSD) return alert("Nombre y Precio obligatorios");
 
+    const payload = {
+      code: productForm.code || `PROD-${Date.now().toString().slice(-4)}`,
+      name: productForm.name,
+      category: productForm.category,
+      description: productForm.description,
+      unit: productForm.unit,
+      cost_usd: parseFloat(productForm.costUSD) || 0,
+      price_usd: parseFloat(productForm.priceUSD) || 0,
+      stock: parseFloat(productForm.stock) || 0
+    };
+
     if (editingProduct) {
-      setInventory(inventory.map(p => p.id === editingProduct.id ? { ...p, ...productForm, costUSD: parseFloat(productForm.costUSD) || 0, priceUSD: parseFloat(productForm.priceUSD) || 0, stock: parseFloat(productForm.stock) || 0 } : p));
+      const { error } = await supabase.from('productos').update(payload).eq('id', editingProduct.id);
+      if (error) return alert("Error al actualizar producto en Supabase");
+      
+      setInventory(inventory.map(p => p.id === editingProduct.id ? { id: p.id, ...productForm, costUSD: payload.cost_usd, priceUSD: payload.price_usd, stock: payload.stock } : p));
       setEditingProduct(null);
     } else {
-      setInventory([...inventory, { id: Date.now(), code: productForm.code || `PROD-${Date.now().toString().slice(-4)}`, ...productForm, costUSD: parseFloat(productForm.costUSD) || 0, priceUSD: parseFloat(productForm.priceUSD) || 0, stock: parseFloat(productForm.stock) || 0 }]);
+      const { data, error } = await supabase.from('productos').insert([payload]).select();
+      if (error) return alert("Error al guardar producto en Supabase");
+      
+      const newProd = {
+        id: data && data[0] ? data[0].id : Date.now(),
+        ...productForm,
+        costUSD: payload.cost_usd,
+        priceUSD: payload.price_usd,
+        stock: payload.stock
+      };
+      setInventory([...inventory, newProd]);
     }
     setProductForm({ code: "", name: "", category: "General", description: "", unit: "und", costUSD: "", priceUSD: "", stock: "" });
+    alert("¡Producto guardado y sincronizado!");
   };
 
-  const handleSaveClient = (e) => {
+  const handleSaveClient = async (e) => {
     e.preventDefault();
     if (!clientForm.name || !clientForm.rif) return alert("Nombre y RIF/Cédula son obligatorios");
-    const newCli = { id: Date.now(), ...clientForm };
+
+    const payload = {
+      name: clientForm.name,
+      rif: clientForm.rif,
+      phone: clientForm.phone,
+      address: clientForm.address,
+      notes: clientForm.notes
+    };
+
+    const { data, error } = await supabase.from('clientes').insert([payload]).select();
+    if (error) {
+      console.error(error);
+      return alert("Error al guardar cliente en Supabase (Verifique si el RIF ya existe)");
+    }
+
+    const newCli = {
+      id: data && data[0] ? data[0].id : Date.now(),
+      ...clientForm
+    };
+
     setClients([...clients, newCli]);
     setSelectedClient(newCli);
     setClientForm({ name: "", rif: "", phone: "", address: "", notes: "" });
-    alert("¡Cliente registrado y seleccionado!");
+    alert("¡Cliente registrado en la nube y seleccionado!");
   };
 
   const filteredClientsForSearch = clients.filter(c => 
@@ -355,7 +494,7 @@ export default function App() {
         <div style={{ background: "#1e293b", border: "1px solid #334155", borderRadius: "16px", padding: "30px", width: "100%", maxWidth: "380px", boxShadow: "0 10px 25px rgba(0,0,0,0.5)" }}>
           <div style={{ textAlign: "center", marginBottom: "25px" }}>
             <span style={{ backgroundColor: "#9333ea", color: "#fff", padding: "8px 16px", borderRadius: "10px", fontWeight: "900", fontSize: "22px", letterSpacing: "1px" }}>MAGO SYS</span>
-            <div style={{ fontSize: "13px", color: "#94a3b8", marginTop: "10px" }}>Sistema POS Multiplataforma</div>
+            <div style={{ fontSize: "13px", color: "#94a3b8", marginTop: "10px" }}>Sincronizado con Supabase Cloud ☁️</div>
           </div>
           <form onSubmit={handleLogin} style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
             <div>
@@ -471,7 +610,7 @@ export default function App() {
                     <div style={{ marginBottom: "10px", background: "#0f172a", padding: "10px", borderRadius: "8px", border: "1px solid #334155", position: "relative" }}>
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" }}>
                         <span style={{ fontSize: "10px", color: "#94a3b8", fontWeight: "bold" }}>CLIENTE ACTUAL:</span>
-                        <span style={{ fontSize: "11px", color: "#38bdf8", fontWeight: "bold" }}>{selectedClient.name} ({selectedClient.rif})</span>
+                        <span style={{ fontSize: "11px", color: "#38bdf8", fontWeight: "bold" }}>{selectedClient ? `${selectedClient.name} (${selectedClient.rif})` : 'Ninguno'}</span>
                       </div>
                       
                       <div style={{ position: "relative" }}>
@@ -590,7 +729,7 @@ export default function App() {
           {activeTab === "inventory" && (
             <div style={{ display: "flex", flexDirection: "column", gap: "15px" }}>
               <div style={{ background: "#1e293b", border: "1px solid #334155", borderRadius: "10px", padding: "15px" }}>
-                <h4 style={{ margin: "0 0 10px 0", color: "#c084fc", fontSize: "14px" }}>{editingProduct ? `Editando: ${editingProduct.name}` : "Registrar Producto / Servicio"}</h4>
+                <h4 style={{ margin: "0 0 10px 0", color: "#c084fc", fontSize: "14px" }}>{editingProduct ? `Editando: ${editingProduct.name}` : "Registrar Producto / Servicio en Nube"}</h4>
                 <form onSubmit={handleSaveProduct} style={{ display: "grid", gridTemplateColumns: window.innerWidth < 768 ? "1fr" : "repeat(3, 1fr)", gap: "10px" }}>
                   <input type="text" placeholder="Código / SKU" value={productForm.code} onChange={(e) => setProductForm({...productForm, code: e.target.value})} style={{ padding: "10px", background: "#0f172a", border: "1px solid #334155", borderRadius: "6px", color: "#fff" }} />
                   <input type="text" placeholder="Nombre *" value={productForm.name} onChange={(e) => setProductForm({...productForm, name: e.target.value})} style={{ padding: "10px", background: "#0f172a", border: "1px solid #334155", borderRadius: "6px", color: "#fff" }} required />
@@ -599,7 +738,7 @@ export default function App() {
                   <input type="number" step="0.01" placeholder="Precio ($) *" value={productForm.priceUSD} onChange={(e) => setProductForm({...productForm, priceUSD: e.target.value})} style={{ padding: "10px", background: "#0f172a", border: "1px solid #334155", borderRadius: "6px", color: "#fff" }} required />
                   <input type="number" placeholder="Stock" value={productForm.stock} onChange={(e) => setProductForm({...productForm, stock: e.target.value})} style={{ padding: "10px", background: "#0f172a", border: "1px solid #334155", borderRadius: "6px", color: "#fff" }} />
                   <button type="submit" style={{ gridColumn: window.innerWidth < 768 ? "span 1" : "span 3", background: currentUser.role === "admin" ? "#9333ea" : "#475569", color: "#fff", border: "none", padding: "12px", borderRadius: "6px", fontWeight: "bold", cursor: currentUser.role === "admin" ? "pointer" : "not-allowed" }}>
-                    {editingProduct ? "Actualizar Producto" : "Guardar Producto"}
+                    {editingProduct ? "Actualizar Producto" : "Guardar en Nube"}
                   </button>
                 </form>
               </div>
@@ -637,7 +776,7 @@ export default function App() {
           {activeTab === "clients" && (
             <div style={{ display: "grid", gridTemplateColumns: window.innerWidth < 768 ? "1fr" : "1fr 1fr", gap: "15px" }}>
               <div style={{ background: "#1e293b", border: "1px solid #334155", borderRadius: "10px", padding: "15px" }}>
-                <h4 style={{ margin: "0 0 10px 0", color: "#c084fc", fontSize: "14px" }}>Registrar Cliente / Empresa (B2B / B2C)</h4>
+                <h4 style={{ margin: "0 0 10px 0", color: "#c084fc", fontSize: "14px" }}>Registrar Cliente / Empresa en Nube (B2B / B2C)</h4>
                 <form onSubmit={handleSaveClient} style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
                   <input type="text" placeholder="Nombre o Razón Social *" value={clientForm.name} onChange={(e) => setClientForm({...clientForm, name: e.target.value})} style={{ padding: "10px", background: "#0f172a", border: "1px solid #334155", borderRadius: "6px", color: "#fff" }} required />
                   <input type="text" placeholder="RIF o Cédula (Ej. J-40123456-8) *" value={clientForm.rif} onChange={(e) => setClientForm({...clientForm, rif: e.target.value})} style={{ padding: "10px", background: "#0f172a", border: "1px solid #334155", borderRadius: "6px", color: "#fff" }} required />
@@ -711,7 +850,7 @@ export default function App() {
               )}
 
               <div style={{ background: "#1e293b", border: "1px solid #334155", borderRadius: "10px", padding: "15px" }}>
-                <h4 style={{ margin: "0 0 10px 0", fontSize: "14px" }}>Historial de Facturas Emitidas</h4>
+                <h4 style={{ margin: "0 0 10px 0", fontSize: "14px" }}>Historial de Facturas Emitidas (Sincronizado)</h4>
                 {salesHistory.map(sale => (
                   <div key={sale.id} style={{ background: "#0f172a", padding: "10px", borderRadius: "6px", marginBottom: "8px", display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "12px" }}>
                     <div>
@@ -968,7 +1107,7 @@ export default function App() {
 
             <div style={{ display: "flex", gap: "8px", marginTop: "5px" }}>
               <button onClick={() => setIsCheckoutOpen(false)} style={{ flex: 1, background: "#334155", color: "#fff", border: "none", padding: "10px", borderRadius: "6px", cursor: "pointer", fontWeight: "bold" }}>Cancelar</button>
-              <button onClick={processPayment} style={{ flex: 1, background: "#9333ea", color: "#fff", border: "none", padding: "10px", borderRadius: "6px", fontWeight: "bold", cursor: "pointer" }}>Confirmar Factura</button>
+              <button onClick={processPayment} style={{ flex: 1, background: "#9333ea", color: "#fff", border: "none", padding: "10px", borderRadius: "6px", fontWeight: "bold", cursor: "pointer" }}>Confirmar Factura y Sincronizar</button>
             </div>
           </div>
         </div>
