@@ -3,11 +3,7 @@ import { supabase } from "./supabaseClient";
 
 export default function App() {
   // --- BASE DE DATOS DE USUARIOS ---
-  const [users, setUsers] = useState([
-    { id: 1, username: "mago", pin: "1452", name: "Miguel González", role: "admin" },
-    { id: 2, username: "cajero1", pin: "5678", name: "María Cajera", role: "cajero" }
-  ]);
-
+  const [users, setUsers] = useState([]);
   const [currentUser, setCurrentUser] = useState(null);
   const [loginUser, setLoginUser] = useState("");
   const [loginPin, setLoginPin] = useState("");
@@ -26,10 +22,10 @@ export default function App() {
     bcvRate: 36.50
   });
 
-  // Inventario General (Cargado desde la nube)
+  // Inventario General
   const [inventory, setInventory] = useState([]);
 
-  // Clientes CRM y Buscador en POS (Cargados desde la nube)
+  // Clientes CRM y Buscador en POS
   const [clients, setClients] = useState([]);
   const [selectedClient, setSelectedClient] = useState(null);
   const [clientSearchText, setClientSearchText] = useState("");
@@ -67,75 +63,84 @@ export default function App() {
 
   // --- CARGA INICIAL DESDE SUPABASE ---
   useEffect(() => {
-    cargarDatosDesdeNube();
+    fetchInitialData();
   }, []);
 
-  const cargarDatosDesdeNube = async () => {
+  const fetchInitialData = async () => {
     try {
-      // 1. Cargar Configuración
-      const { data: configData } = await supabase.from('config').select('*').single();
-      if (configData) {
+      // 1. Configuración
+      const { data: configData } = await supabase.from('config').select('*').limit(1);
+      if (configData && configData.length > 0) {
         setConfig({
-          storeName: configData.store_name,
-          rif: configData.rif,
-          address: configData.address,
-          phone: configData.phone,
-          footerMessage: configData.footer_message,
-          bcvRate: parseFloat(configData.bcv_rate) || 36.50
+          storeName: configData[0].store_name || "MAGO SYS VENEZUELA C.A.",
+          rif: configData[0].rif || "J-50123456-7",
+          address: configData[0].address || "Av. Principal, Local 4, Caracas",
+          phone: configData[0].phone || "0412-1234567",
+          footerMessage: configData[0].footer_message || "¡Gracias por su compra! Vuelva pronto.",
+          bcvRate: configData[0].bcv_rate || 36.50
         });
       }
 
-      // 2. Cargar Productos
+      // 2. Usuarios
+      const { data: usrData } = await supabase.from('usuarios').select('*');
+      if (usrData && usrData.length > 0) {
+        setUsers(usrData);
+      } else {
+        setUsers([{ id: 1, username: "mago", pin: "1452", name: "Miguel González", role: "admin" }]);
+      }
+
+      // 3. Inventario
       const { data: prodData } = await supabase.from('productos').select('*');
-      if (prodData && prodData.length > 0) {
+      if (prodData) {
         setInventory(prodData.map(p => ({
-          id: p.id,
-          code: p.code,
-          name: p.name,
-          category: p.category,
-          description: p.description,
-          unit: p.unit,
-          costUSD: parseFloat(p.cost_usd) || 0,
-          priceUSD: parseFloat(p.price_usd) || 0,
-          stock: parseFloat(p.stock) || 0
+          ...p,
+          costUSD: p.cost_usd,
+          priceUSD: p.price_usd
         })));
       }
 
-      // 3. Cargar Clientes
-      const { data: clientData } = await supabase.from('clientes').select('*');
-      if (clientData && clientData.length > 0) {
-        const formattedClients = clientData.map(c => ({
-          id: c.id,
-          name: c.name,
-          rif: c.rif,
-          phone: c.phone,
-          address: c.address,
-          notes: c.notes
-        }));
-        setClients(formattedClients);
-        setSelectedClient(formattedClients[0]);
+      // 4. Clientes
+      const { data: cliData } = await supabase.from('clientes').select('*');
+      if (cliData && cliData.length > 0) {
+        setClients(cliData);
+        setSelectedClient(cliData[0]);
+      } else {
+        const defaultCli = { id: 1, name: "Cliente Genérico", rif: "V-00000000-0", phone: "0412-0000000", address: "Caracas, Distrito Capital", notes: "Sin notas" };
+        setClients([defaultCli]);
+        setSelectedClient(defaultCli);
       }
 
-      // 4. Cargar Historial de Ventas
-      const { data: salesData } = await supabase.from('ventas').select('*').order('id', { ascending: false });
+      // 5. Ventas
+      const { data: salesData } = await supabase.from('ventas').select('*');
       if (salesData) {
-        setSalesHistory(salesData.map(s => ({
-          id: s.id,
-          invoiceNumber: s.invoice_number,
-          date: new Date(s.created_at).toLocaleString(),
-          timestamp: new Date(s.created_at).getTime(),
-          client: s.client_data,
-          cashier: s.cashier,
-          items: s.items,
-          totalUSD: parseFloat(s.total_usd) || 0,
-          totalVES: parseFloat(s.total_ves) || 0,
-          paymentRows: s.payment_rows,
-          changeInfo: s.change_info,
-          status: s.status
+        setSalesHistory(salesData.map(v => ({
+          ...v,
+          invoiceNumber: v.invoice_number,
+          client: v.client_data,
+          paymentRows: v.payment_rows,
+          totalUSD: v.total_usd,
+          totalVES: v.total_ves,
+          timestamp: new Date(v.created_at).getTime(),
+          date: new Date(v.created_at).toLocaleString()
         })));
       }
-    } catch (error) {
-      console.error("Error al sincronizar con Supabase:", error);
+
+      // 6. Cierres Z
+      const { data: zData } = await supabase.from('cierres_z').select('*');
+      if (zData) {
+        setClosedZReports(zData.map(z => ({
+          ...z,
+          zNumber: z.z_number,
+          salesList: z.sales_list,
+          totalInvoices: z.total_invoices,
+          totalUSD: z.total_usd,
+          totalVES: z.total_ves,
+          admin: z.admin_name,
+          date: new Date(z.created_at).toLocaleString()
+        })));
+      }
+    } catch (err) {
+      console.error("Error sincronizando con Supabase:", err);
     }
   };
 
@@ -153,21 +158,41 @@ export default function App() {
   };
 
   // --- GESTIÓN DE USUARIOS ---
-  const handleCreateUser = (e) => {
+  const handleCreateUser = async (e) => {
     e.preventDefault();
     if (currentUser?.role !== "admin") return alert("❌ Solo Administradores.");
     if (!newUserForm.username || !newUserForm.pin || !newUserForm.name) return alert("Complete los campos obligatorios.");
     if (users.some(u => u.username === newUserForm.username)) return alert("El usuario ya existe.");
 
-    setUsers([...users, { id: Date.now(), ...newUserForm }]);
+    const payload = {
+      username: newUserForm.username.trim(),
+      pin: newUserForm.pin,
+      name: newUserForm.name,
+      role: newUserForm.role || "cajero"
+    };
+
+    const { data, error } = await supabase.from('usuarios').insert([payload]).select();
+    if (error) {
+      return alert(`❌ Error al crear usuario en Supabase: ${error.message}`);
+    }
+
+    if (data && data[0]) {
+      setUsers([...users, data[0]]);
+    }
     setNewUserForm({ username: "", pin: "", name: "", role: "cajero" });
-    alert("¡Usuario creado con éxito!");
+    alert("¡Usuario creado con éxito en la nube! 👤");
   };
 
-  const deleteUser = (id) => {
+  const deleteUser = async (id, username) => {
     if (currentUser?.role !== "admin") return alert("❌ Solo Administradores.");
     if (users.length <= 1) return alert("No puedes eliminar el último usuario.");
+    if (username === "mago") return alert("No se puede eliminar al usuario principal.");
+
+    const { error } = await supabase.from('usuarios').delete().eq('id', id);
+    if (error) return alert(`❌ Error al eliminar usuario: ${error.message}`);
+
     setUsers(users.filter(u => u.id !== id));
+    alert("Usuario eliminado correctamente.");
   };
 
   // --- POS & CARRITO ---
@@ -201,29 +226,52 @@ export default function App() {
 
   // --- ABRIR CHECKOUT Y CARGAR DATOS DE FACTURA ---
   const handleOpenCheckout = () => {
-    if (!selectedClient) return alert("Seleccione un cliente primero.");
+    if (!selectedClient) {
+      setSelectedClient(clients[0] || { name: "Cliente Genérico", rif: "V-00000000-0", address: "Caracas" });
+    }
     setPaymentRows([{ method: "Efectivo USD", currency: "USD", rawAmount: totalUSD.toFixed(2) }]);
     setCustomInvoiceData({
-      name: selectedClient.name,
-      rif: selectedClient.rif,
-      address: selectedClient.address || "Caracas, Distrito Capital",
+      name: selectedClient?.name || "Cliente Genérico",
+      rif: selectedClient?.rif || "V-00000000-0",
+      address: selectedClient?.address || "Caracas, Distrito Capital",
       notes: ""
     });
     setIsCheckoutOpen(true);
   };
 
   // --- COMANDA EN STANDBY ---
-  const handleGenerateComanda = () => {
+  const handleGenerateComanda = async () => {
     if (cart.length === 0) return alert("❌ El carrito está vacío.");
     
+    for (const cartItem of cart) {
+      const prod = inventory.find(p => p.id === cartItem.id);
+      if (prod) {
+        const newStock = Math.max(0, prod.stock - cartItem.quantity);
+        await supabase.from('productos').update({ stock: newStock }).eq('id', prod.id);
+      }
+    }
+
     setInventory(inventory.map(prod => {
       const cartItem = cart.find(ci => ci.id === prod.id);
       return cartItem ? { ...prod, stock: prod.stock - cartItem.quantity } : prod;
     }));
 
+    const comandaNumber = `CMD-${Math.floor(100000 + Math.random() * 900000)}`;
+    const comandaPayload = {
+      comanda_number: comandaNumber,
+      client_data: selectedClient,
+      cashier: currentUser.name,
+      items: cart,
+      total_usd: parseFloat(totalUSD.toFixed(2)),
+      total_ves: parseFloat(totalVES.toFixed(2)),
+      status: "STANDBY"
+    };
+
+    const { data } = await supabase.from('comandas').insert([comandaPayload]).select();
+
     const newComanda = {
-      id: Date.now(),
-      comandaNumber: `CMD-${Math.floor(100000 + Math.random() * 900000)}`,
+      id: data && data[0] ? data[0].id : Date.now(),
+      comandaNumber,
       date: new Date().toLocaleString(),
       client: selectedClient,
       cashier: currentUser.name,
@@ -265,12 +313,7 @@ export default function App() {
     const currentRemainingUSD = Math.max(0, totalUSD - otherRowsPaidUSD);
     const targetRow = paymentRows[index];
 
-    let amountToSet = 0;
-    if (targetRow.currency === "VES") {
-      amountToSet = currentRemainingUSD * config.bcvRate;
-    } else {
-      amountToSet = currentRemainingUSD;
-    }
+    let amountToSet = targetRow.currency === "VES" ? currentRemainingUSD * config.bcvRate : currentRemainingUSD;
 
     const updated = [...paymentRows];
     updated[index].rawAmount = amountToSet.toFixed(2);
@@ -292,7 +335,6 @@ export default function App() {
   const totalPaidUSD = paymentRows.reduce((acc, row) => acc + getRowAmountInUSD(row), 0);
   const remainingUSD = totalUSD - totalPaidUSD;
 
-  // --- PROCESAR PAGO Y GUARDAR EN SUPABASE ---
   const processPayment = async () => {
     if (Math.abs(remainingUSD) > 0.05 && totalPaidUSD < totalUSD) {
       return alert("❌ El monto pagado es menor al total de la factura. Complete el pago mixto.");
@@ -326,33 +368,37 @@ export default function App() {
       notes: customInvoiceData.notes || ""
     };
 
-    const invoiceNum = `FAC-${Math.floor(100000 + Math.random() * 900000)}`;
+    const invoiceNumber = `FAC-${Math.floor(100000 + Math.random() * 900000)}`;
 
-    const newSalePayload = {
-      invoice_number: invoiceNum,
+    const ventaPayload = {
+      invoice_number: invoiceNumber,
       client_data: finalClientData,
       cashier: currentUser.name,
       items: cart,
-      total_usd: totalUSD,
-      total_ves: totalVES,
+      total_usd: parseFloat(totalUSD.toFixed(2)),
+      total_ves: parseFloat(totalVES.toFixed(2)),
       payment_rows: formattedPaymentRows,
       change_info: changeInfo,
-      bcv_rate_used: config.bcvRate,
+      bcv_rate_used: parseFloat(config.bcvRate),
       status: "COMPLETADA"
     };
 
-    // ☁️ Guardar en Supabase
-    const { data, error } = await supabase.from('ventas').insert([newSalePayload]).select();
-
+    const { data, error } = await supabase.from('ventas').insert([ventaPayload]).select();
     if (error) {
-      console.error("Error al guardar venta en Supabase:", error);
-      alert("❌ Hubo un error al registrar la venta en la nube.");
-      return;
+      return alert(`❌ Error al guardar venta en Supabase: ${error.message}`);
     }
 
-    const savedSale = {
+    for (const item of cart) {
+      const prod = inventory.find(p => p.id === item.id);
+      if (prod) {
+        const newStock = Math.max(0, prod.stock - item.quantity);
+        await supabase.from('productos').update({ stock: newStock }).eq('id', prod.id);
+      }
+    }
+
+    const newSale = {
       id: data && data[0] ? data[0].id : Date.now(),
-      invoiceNumber: invoiceNum,
+      invoiceNumber,
       date: new Date().toLocaleString(),
       timestamp: Date.now(),
       client: finalClientData,
@@ -365,12 +411,12 @@ export default function App() {
       status: "COMPLETADA"
     };
 
-    setSalesHistory([savedSale, ...salesHistory]);
-    setPrintedInvoice(savedSale);
+    setSalesHistory([newSale, ...salesHistory]);
+    setPrintedInvoice(newSale);
     setCart([]);
     setIsCheckoutOpen(false);
     setCashTenderedUSD("");
-    alert("¡Venta procesada y sincronizada en la nube con éxito!");
+    fetchInitialData();
   };
 
   // --- REPORTES X Y Z ---
@@ -380,7 +426,7 @@ export default function App() {
   const totalTodayVES = todaySales.reduce((acc, s) => acc + s.totalVES, 0);
 
   const handleGenerateReportX = () => {
-    const reportData = {
+    setPrintedReportModal({
       type: "REPORTE X (Corte Parcial del Día)",
       date: new Date().toLocaleString(),
       salesList: [...todaySales],
@@ -388,19 +434,31 @@ export default function App() {
       totalUSD: totalTodayUSD,
       totalVES: totalTodayVES,
       cashier: currentUser.name
-    };
-    setPrintedReportModal(reportData);
+    });
   };
 
-  const handleGenerateReportZ = () => {
+  const handleGenerateReportZ = async () => {
     if (currentUser.role !== "admin") return alert("❌ Solo el Administrador puede ejecutar el Cierre Z diario.");
     if (todaySales.length === 0) return alert("ℹ️ No hay ventas registradas hoy para consolidar en el Cierre Z.");
     
     if (window.confirm("⚠️ ¿Estás seguro de realizar el Cierre Z? Esto consolidará las ventas de la jornada.")) {
+      const zNumber = `Z-${Math.floor(10000 + Math.random() * 90000)}`;
+      const zPayload = {
+        z_number: zNumber,
+        sales_list: todaySales,
+        total_invoices: todaySales.length,
+        total_usd: parseFloat(totalTodayUSD.toFixed(2)),
+        total_ves: parseFloat(totalTodayVES.toFixed(2)),
+        admin_name: currentUser.name
+      };
+
+      const { data, error } = await supabase.from('cierres_z').insert([zPayload]).select();
+      if (error) return alert(`❌ Error al guardar Cierre Z: ${error.message}`);
+
       const zReport = {
-        id: Date.now(),
+        id: data && data[0] ? data[0].id : Date.now(),
         type: "REPORTE Z (Cierre de Caja Diario)",
-        zNumber: `Z-${Math.floor(10000 + Math.random() * 90000)}`,
+        zNumber,
         date: new Date().toLocaleString(),
         salesList: [...todaySales],
         totalInvoices: todaySales.length,
@@ -408,12 +466,14 @@ export default function App() {
         totalVES: totalTodayVES,
         admin: currentUser.name
       };
+
       setClosedZReports([zReport, ...closedZReports]);
       setPrintedReportModal(zReport);
+      alert("✅ ¡Cierre Z ejecutado y guardado en Supabase!");
     }
   };
 
-  // --- GESTIÓN PRODUCTOS Y CLIENTES ---
+  // --- GESTIÓN PRODUCTOS Y CLIENTES EN SUPABASE ---
   const handleSaveProduct = async (e) => {
     e.preventDefault();
     if (currentUser.role !== "admin") return alert("❌ Solo Administradores.");
@@ -422,9 +482,9 @@ export default function App() {
     const payload = {
       code: productForm.code || `PROD-${Date.now().toString().slice(-4)}`,
       name: productForm.name,
-      category: productForm.category,
-      description: productForm.description,
-      unit: productForm.unit,
+      category: productForm.category || "General",
+      description: productForm.description || "",
+      unit: productForm.unit || "und",
       cost_usd: parseFloat(productForm.costUSD) || 0,
       price_usd: parseFloat(productForm.priceUSD) || 0,
       stock: parseFloat(productForm.stock) || 0
@@ -432,25 +492,21 @@ export default function App() {
 
     if (editingProduct) {
       const { error } = await supabase.from('productos').update(payload).eq('id', editingProduct.id);
-      if (error) return alert("Error al actualizar producto en Supabase");
-      
-      setInventory(inventory.map(p => p.id === editingProduct.id ? { id: p.id, ...productForm, costUSD: payload.cost_usd, priceUSD: payload.price_usd, stock: payload.stock } : p));
+      if (error) return alert(`❌ Error al actualizar producto: ${error.message}`);
+
+      setInventory(inventory.map(p => p.id === editingProduct.id ? { ...p, ...productForm, costUSD: payload.cost_usd, priceUSD: payload.price_usd, stock: payload.stock } : p));
       setEditingProduct(null);
+      alert("¡Producto actualizado en Supabase! ✏️");
     } else {
       const { data, error } = await supabase.from('productos').insert([payload]).select();
-      if (error) return alert("Error al guardar producto en Supabase");
-      
-      const newProd = {
-        id: data && data[0] ? data[0].id : Date.now(),
-        ...productForm,
-        costUSD: payload.cost_usd,
-        priceUSD: payload.price_usd,
-        stock: payload.stock
-      };
-      setInventory([...inventory, newProd]);
+      if (error) return alert(`❌ Error al guardar producto: ${error.message}`);
+
+      if (data && data[0]) {
+        setInventory([...inventory, { ...data[0], costUSD: data[0].cost_usd, priceUSD: data[0].price_usd }]);
+      }
+      alert("¡Producto guardado y sincronizado en Supabase! ☁️");
     }
     setProductForm({ code: "", name: "", category: "General", description: "", unit: "und", costUSD: "", priceUSD: "", stock: "" });
-    alert("¡Producto guardado y sincronizado!");
   };
 
   const handleSaveClient = async (e) => {
@@ -459,27 +515,43 @@ export default function App() {
 
     const payload = {
       name: clientForm.name,
-      rif: clientForm.rif,
-      phone: clientForm.phone,
-      address: clientForm.address,
-      notes: clientForm.notes
+      rif: clientForm.rif.trim().toUpperCase(),
+      phone: clientForm.phone || "",
+      address: clientForm.address || "",
+      notes: clientForm.notes || ""
     };
 
     const { data, error } = await supabase.from('clientes').insert([payload]).select();
     if (error) {
-      console.error(error);
-      return alert("Error al guardar cliente en Supabase (Verifique si el RIF ya existe)");
+      if (error.code === '23505') return alert("⚠️ El RIF/Cédula ya está registrado en la base de datos.");
+      return alert(`❌ Error al guardar cliente: ${error.message}`);
     }
 
-    const newCli = {
-      id: data && data[0] ? data[0].id : Date.now(),
-      ...clientForm
+    if (data && data[0]) {
+      setClients([...clients, data[0]]);
+      setSelectedClient(data[0]);
+    }
+    setClientForm({ name: "", rif: "", phone: "", address: "", notes: "" });
+    alert("¡Cliente registrado y sincronizado en Supabase! 👥");
+  };
+
+  const handleSaveConfig = async () => {
+    if (currentUser.role !== "admin") return alert("❌ Solo Administradores.");
+
+    const configPayload = {
+      id: 1,
+      store_name: config.storeName,
+      rif: config.rif,
+      address: config.address,
+      phone: config.phone,
+      footer_message: config.footerMessage,
+      bcv_rate: parseFloat(config.bcvRate) || 36.50
     };
 
-    setClients([...clients, newCli]);
-    setSelectedClient(newCli);
-    setClientForm({ name: "", rif: "", phone: "", address: "", notes: "" });
-    alert("¡Cliente registrado en la nube y seleccionado!");
+    const { error } = await supabase.from('config').upsert(configPayload);
+    if (error) return alert(`❌ Error al guardar configuración: ${error.message}`);
+
+    alert("✅ ¡Configuración guardada y sincronizada en Supabase!");
   };
 
   const filteredClientsForSearch = clients.filter(c => 
@@ -494,7 +566,7 @@ export default function App() {
         <div style={{ background: "#1e293b", border: "1px solid #334155", borderRadius: "16px", padding: "30px", width: "100%", maxWidth: "380px", boxShadow: "0 10px 25px rgba(0,0,0,0.5)" }}>
           <div style={{ textAlign: "center", marginBottom: "25px" }}>
             <span style={{ backgroundColor: "#9333ea", color: "#fff", padding: "8px 16px", borderRadius: "10px", fontWeight: "900", fontSize: "22px", letterSpacing: "1px" }}>MAGO SYS</span>
-            <div style={{ fontSize: "13px", color: "#94a3b8", marginTop: "10px" }}>Sincronizado con Supabase Cloud ☁️</div>
+            <div style={{ fontSize: "13px", color: "#94a3b8", marginTop: "10px" }}>Sistema POS Multiplataforma (Supabase)</div>
           </div>
           <form onSubmit={handleLogin} style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
             <div>
@@ -564,7 +636,7 @@ export default function App() {
           <div style={{ height: "60px", background: "#1e293b", borderBottom: "1px solid #334155", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 25px" }}>
             <h3 style={{ margin: 0, fontSize: "16px", color: "#cbd5e1" }}>
               {activeTab === "pos" && "Terminal POS, Comandas y Facturación"}
-              {activeTab === "inventory" && "Gestión de Inventario"}
+              {activeTab === "inventory" && "Gestión de Inventario (Supabase)"}
               {activeTab === "clients" && "Directorio de Clientes y CRM"}
               {activeTab === "reports" && "Cierres y Reportes Fiscales X & Z"}
               {activeTab === "users" && "Control de Usuarios y Roles"}
@@ -610,7 +682,7 @@ export default function App() {
                     <div style={{ marginBottom: "10px", background: "#0f172a", padding: "10px", borderRadius: "8px", border: "1px solid #334155", position: "relative" }}>
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" }}>
                         <span style={{ fontSize: "10px", color: "#94a3b8", fontWeight: "bold" }}>CLIENTE ACTUAL:</span>
-                        <span style={{ fontSize: "11px", color: "#38bdf8", fontWeight: "bold" }}>{selectedClient ? `${selectedClient.name} (${selectedClient.rif})` : 'Ninguno'}</span>
+                        <span style={{ fontSize: "11px", color: "#38bdf8", fontWeight: "bold" }}>{selectedClient?.name} ({selectedClient?.rif})</span>
                       </div>
                       
                       <div style={{ position: "relative" }}>
@@ -738,7 +810,7 @@ export default function App() {
                   <input type="number" step="0.01" placeholder="Precio ($) *" value={productForm.priceUSD} onChange={(e) => setProductForm({...productForm, priceUSD: e.target.value})} style={{ padding: "10px", background: "#0f172a", border: "1px solid #334155", borderRadius: "6px", color: "#fff" }} required />
                   <input type="number" placeholder="Stock" value={productForm.stock} onChange={(e) => setProductForm({...productForm, stock: e.target.value})} style={{ padding: "10px", background: "#0f172a", border: "1px solid #334155", borderRadius: "6px", color: "#fff" }} />
                   <button type="submit" style={{ gridColumn: window.innerWidth < 768 ? "span 1" : "span 3", background: currentUser.role === "admin" ? "#9333ea" : "#475569", color: "#fff", border: "none", padding: "12px", borderRadius: "6px", fontWeight: "bold", cursor: currentUser.role === "admin" ? "pointer" : "not-allowed" }}>
-                    {editingProduct ? "Actualizar Producto" : "Guardar en Nube"}
+                    {editingProduct ? "Actualizar Producto" : "Guardar en Nube ☁️"}
                   </button>
                 </form>
               </div>
@@ -762,7 +834,7 @@ export default function App() {
                         <td style={{ padding: "10px", color: "#c084fc" }}>${prod.priceUSD.toFixed(2)}</td>
                         <td style={{ padding: "10px" }}>{prod.stock}</td>
                         <td style={{ padding: "10px", textAlign: "right" }}>
-                          <button onClick={() => { if(currentUser.role !== "admin") alert("Solo Admin"); else setEditingProduct(prod); setProductForm(prod); }} style={{ background: "#334155", color: "#c084fc", border: "none", padding: "6px 10px", borderRadius: "6px", fontSize: "11px" }}>Editar</button>
+                          <button onClick={() => { if(currentUser.role !== "admin") alert("Solo Admin"); else { setEditingProduct(prod); setProductForm({ code: prod.code, name: prod.name, category: prod.category || "General", description: prod.description || "", unit: prod.unit || "und", costUSD: prod.costUSD, priceUSD: prod.priceUSD, stock: prod.stock }); } }} style={{ background: "#334155", color: "#c084fc", border: "none", padding: "6px 10px", borderRadius: "6px", fontSize: "11px" }}>Editar</button>
                         </td>
                       </tr>
                     ))}
@@ -776,7 +848,7 @@ export default function App() {
           {activeTab === "clients" && (
             <div style={{ display: "grid", gridTemplateColumns: window.innerWidth < 768 ? "1fr" : "1fr 1fr", gap: "15px" }}>
               <div style={{ background: "#1e293b", border: "1px solid #334155", borderRadius: "10px", padding: "15px" }}>
-                <h4 style={{ margin: "0 0 10px 0", color: "#c084fc", fontSize: "14px" }}>Registrar Cliente / Empresa en Nube (B2B / B2C)</h4>
+                <h4 style={{ margin: "0 0 10px 0", color: "#c084fc", fontSize: "14px" }}>Registrar Cliente / Empresa (B2B / B2C)</h4>
                 <form onSubmit={handleSaveClient} style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
                   <input type="text" placeholder="Nombre o Razón Social *" value={clientForm.name} onChange={(e) => setClientForm({...clientForm, name: e.target.value})} style={{ padding: "10px", background: "#0f172a", border: "1px solid #334155", borderRadius: "6px", color: "#fff" }} required />
                   <input type="text" placeholder="RIF o Cédula (Ej. J-40123456-8) *" value={clientForm.rif} onChange={(e) => setClientForm({...clientForm, rif: e.target.value})} style={{ padding: "10px", background: "#0f172a", border: "1px solid #334155", borderRadius: "6px", color: "#fff" }} required />
@@ -850,7 +922,7 @@ export default function App() {
               )}
 
               <div style={{ background: "#1e293b", border: "1px solid #334155", borderRadius: "10px", padding: "15px" }}>
-                <h4 style={{ margin: "0 0 10px 0", fontSize: "14px" }}>Historial de Facturas Emitidas (Sincronizado)</h4>
+                <h4 style={{ margin: "0 0 10px 0", fontSize: "14px" }}>Historial de Facturas Emitidas</h4>
                 {salesHistory.map(sale => (
                   <div key={sale.id} style={{ background: "#0f172a", padding: "10px", borderRadius: "6px", marginBottom: "8px", display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "12px" }}>
                     <div>
@@ -890,7 +962,7 @@ export default function App() {
                         <div style={{ fontWeight: "bold", color: "#38bdf8" }}>{u.name} ({u.role})</div>
                       </div>
                       {u.username !== "mago" && (
-                        <button onClick={() => deleteUser(u.id)} style={{ background: "#7f1d1d", color: "#fca5a5", border: "none", padding: "6px 10px", borderRadius: "4px" }}>Eliminar</button>
+                        <button onClick={() => deleteUser(u.id, u.username)} style={{ background: "#7f1d1d", color: "#fca5a5", border: "none", padding: "6px 10px", borderRadius: "4px" }}>Eliminar</button>
                       )}
                     </div>
                   ))}
@@ -937,7 +1009,7 @@ export default function App() {
                   </div>
                 </div>
 
-                <button onClick={() => alert("✅ ¡Personalización guardada!")} style={{ width: "100%", background: currentUser.role === "admin" ? "#9333ea" : "#475569", color: "#fff", border: "none", padding: "12px", borderRadius: "8px", fontWeight: "bold", marginTop: "20px", cursor: currentUser.role === "admin" ? "pointer" : "not-allowed" }}>
+                <button onClick={handleSaveConfig} style={{ width: "100%", background: currentUser.role === "admin" ? "#9333ea" : "#475569", color: "#fff", border: "none", padding: "12px", borderRadius: "8px", fontWeight: "bold", marginTop: "20px", cursor: currentUser.role === "admin" ? "pointer" : "not-allowed" }}>
                   Guardar Configuración
                 </button>
               </div>
@@ -1107,7 +1179,7 @@ export default function App() {
 
             <div style={{ display: "flex", gap: "8px", marginTop: "5px" }}>
               <button onClick={() => setIsCheckoutOpen(false)} style={{ flex: 1, background: "#334155", color: "#fff", border: "none", padding: "10px", borderRadius: "6px", cursor: "pointer", fontWeight: "bold" }}>Cancelar</button>
-              <button onClick={processPayment} style={{ flex: 1, background: "#9333ea", color: "#fff", border: "none", padding: "10px", borderRadius: "6px", fontWeight: "bold", cursor: "pointer" }}>Confirmar Factura y Sincronizar</button>
+              <button onClick={processPayment} style={{ flex: 1, background: "#9333ea", color: "#fff", border: "none", padding: "10px", borderRadius: "6px", fontWeight: "bold", cursor: "pointer" }}>Confirmar Factura</button>
             </div>
           </div>
         </div>
@@ -1169,7 +1241,7 @@ export default function App() {
                       <span>${sale.totalUSD.toFixed(2)} (Bs. {sale.totalVES.toFixed(2)})</span>
                     </div>
                     <div>Cliente: {sale.client.name} ({sale.client.rif})</div>
-                    <div>Cajero: {sale.cashier} | {sale.date.split(',')[1]}</div>
+                    <div>Cajero: {sale.cashier}</div>
                     <div style={{ color: "#444", fontSize: "9px" }}>
                       Pagos: {sale.paymentRows.map(p => `${p.method} (${p.currency}): ${p.currency === 'USD' ? '$' + p.rawAmount.toFixed(2) : 'Bs. ' + p.rawAmount.toFixed(2)}`).join(' | ')}
                     </div>
